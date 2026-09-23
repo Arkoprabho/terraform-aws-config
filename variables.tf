@@ -140,6 +140,7 @@ variable "managed_rules" {
     input_parameters = any
     tags             = map(string)
     enabled          = bool
+    evaluation_mode  = optional(string, null)
   }))
   default = {}
 }
@@ -208,6 +209,12 @@ variable "exclusion_by_resource_types" {
   default     = null
 }
 
+variable "s3_kms_key_arn" {
+  type        = string
+  description = "The ARN of the KMS key used to encrypt objects delivered by AWS Config to the S3 bucket. Must be in the same region as the S3 bucket."
+  default     = null
+}
+
 variable "s3_key_prefix" {
   type        = string
   description = <<-DOC
@@ -246,4 +253,51 @@ variable "allowed_iam_arns_for_sns_publish" {
   type        = list(string)
   description = "IAM role/user ARNs that will have permission to publish to SNS topic. Used when no external json policy is used."
   default     = []
+}
+
+variable "custom_lambda_rules" {
+  description = <<-DOC
+    A map of custom Lambda-based Config rules.
+    Each rule requires a Lambda function ARN and custom runtime logic.
+    
+    See the following for more information:
+    https://docs.aws.amazon.com/config/latest/developerguide/custom-lambda-rules.html
+  DOC
+  type = map(object({
+    description         = string
+    lambda_function_arn = string
+    input_parameters    = optional(any, {})
+    source_identifier   = optional(string, null)
+    evaluation_mode     = optional(string, null)
+    scope = optional(object({
+      compliance_resource_types = optional(list(string), [])
+    }), null)
+    tags    = optional(map(string), {})
+    enabled = bool
+  }))
+  default = {}
+}
+
+variable "custom_policy_rules" {
+  description = <<-DOC
+    A map of custom policy-based Config rules (CFN Guard, etc.).
+    Uses inline policy_text for rule evaluation.
+
+    See the following for more information:
+    https://docs.aws.amazon.com/config/latest/developerguide/evaluate-config_develop-rules_cfn-guard.html
+  DOC
+  type = map(object({
+    description               = string
+    policy                    = optional(string, null)
+    policy_runtime            = optional(string, "guard-2.x.x")
+    enable_debug_log_delivery = optional(bool, false)
+    evaluation_mode           = optional(string, null)
+    input_parameters          = optional(any, {})
+    scope = optional(object({
+      compliance_resource_types = optional(list(string), [])
+    }), null)
+    tags    = optional(map(string), {})
+    enabled = bool
+  }))
+  default = {}
 }
