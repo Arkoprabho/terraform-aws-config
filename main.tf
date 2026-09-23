@@ -57,6 +57,7 @@ resource "aws_config_delivery_channel" "channel" {
   name           = module.aws_config_label.id
   s3_bucket_name = var.s3_bucket_id
   s3_key_prefix  = var.s3_key_prefix
+  s3_kms_key_arn = var.s3_kms_key_arn
   sns_topic_arn  = local.findings_notification_arn
 
   depends_on = [
@@ -84,8 +85,85 @@ resource "aws_config_config_rule" "rules" {
     source_identifier = each.value.identifier
   }
 
+  dynamic "evaluation_mode" {
+    for_each = each.value.evaluation_mode != null ? [each.value.evaluation_mode] : []
+    content {
+      mode = evaluation_mode.value
+    }
+  }
+
   input_parameters = length(each.value.input_parameters) > 0 ? jsonencode(each.value.input_parameters) : null
   tags             = merge(module.this.tags, each.value.tags)
+}
+
+resource "aws_config_config_rule" "custom_lambda_rules" {
+  for_each   = module.this.enabled ? { for k, v in var.custom_lambda_rules : k => v if v.enabled } : {}
+  depends_on = [aws_config_configuration_recorder_status.recorder_status]
+
+  name        = each.key
+  description = each.value.description
+
+  source {
+    owner             = "CUSTOM_LAMBDA"
+    source_identifier = each.value.lambda_function_arn
+  }
+
+  dynamic "evaluation_mode" {
+    for_each = each.value.evaluation_mode != null ? [each.value.evaluation_mode] : []
+    content {
+      mode = evaluation_mode.value
+    }
+  }
+
+  input_parameters = length(each.value.input_parameters) > 0 ? jsonencode(each.value.input_parameters) : null
+
+  dynamic "scope" {
+    for_each = each.value.scope != null ? [1] : []
+    content {
+      compliance_resource_types = each.value.scope.compliance_resource_types
+    }
+  }
+
+  tags = merge(module.this.tags, each.value.tags)
+}
+
+resource "aws_config_config_rule" "custom_policy_rules" {
+  for_each   = module.this.enabled ? { for k, v in var.custom_policy_rules : k => v if v.enabled } : {}
+  depends_on = [aws_config_configuration_recorder_status.recorder_status]
+
+  name        = each.key
+  description = each.value.description
+
+  source {
+    owner = "CUSTOM_POLICY"
+
+    dynamic "custom_policy_details" {
+      for_each = each.value.policy != null ? [1] : []
+      content {
+        policy_runtime            = each.value.policy_runtime
+        policy_text               = each.value.policy
+        enable_debug_log_delivery = each.value.enable_debug_log_delivery
+      }
+    }
+  }
+
+  dynamic "evaluation_mode" {
+    for_each = each.value.evaluation_mode != null ? [each.value.evaluation_mode] : []
+    content {
+      mode = evaluation_mode.value
+    }
+  }
+
+  input_parameters = length(each.value.input_parameters) > 0 ? jsonencode(each.value.input_parameters) : null
+
+  dynamic "scope" {
+    for_each = each.value.scope != null ? [1] : []
+    content {
+      compliance_resource_types = each.value.scope.compliance_resource_types
+    }
+  }
+
+  tags = merge(module.this.tags, each.value.tags)
 }
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -93,7 +171,7 @@ resource "aws_config_config_rule" "rules" {
 #-----------------------------------------------------------------------------------------------------------------------
 module "sns_topic" {
   source  = "cloudposse/sns-topic/aws"
-  version = "0.20.1"
+  version = "1.2.0"
   count   = module.this.enabled && local.create_sns_topic ? 1 : 0
 
   attributes = concat(module.this.attributes, ["config"])
@@ -134,7 +212,7 @@ module "aws_config_findings_label" {
 module "iam_role" {
   count   = module.this.enabled && local.create_iam_role ? 1 : 0
   source  = "cloudposse/iam-role/aws"
-  version = "0.19.0"
+  version = "1.0.0"
 
   principals = {
     "Service" = ["config.amazonaws.com"]
@@ -162,7 +240,7 @@ module "iam_role" {
 module "iam_role_organization_aggregator" {
   count   = local.create_organization_aggregator_iam_role ? 1 : 0
   source  = "cloudposse/iam-role/aws"
-  version = "0.19.0"
+  version = "1.0.0"
 
   principals = {
     "Service" = ["config.amazonaws.com"]
@@ -283,8 +361,8 @@ resource "aws_config_aggregate_authorization" "child" {
   # central_resource_collector_account
   count = local.enabled && var.central_resource_collector_account != null && var.is_organization_aggregator == false ? 1 : 0
 
-  account_id = var.central_resource_collector_account
-  region     = var.global_resource_collector_region
+  account_id            = var.central_resource_collector_account
+  authorized_aws_region = var.global_resource_collector_region
 
   tags = module.this.tags
 }
@@ -296,8 +374,8 @@ resource "aws_config_aggregate_authorization" "central" {
   # Authorize each region to send its data to the global_resource_collector_region
   count = local.enabled && var.central_resource_collector_account == null && var.is_organization_aggregator == false ? 1 : 0
 
-  account_id = data.aws_caller_identity.this.account_id
-  region     = var.global_resource_collector_region
+  account_id            = data.aws_caller_identity.this.account_id
+  authorized_aws_region = var.global_resource_collector_region
 
   tags = module.this.tags
 }
@@ -310,10 +388,10 @@ data "aws_caller_identity" "this" {}
 data "aws_partition" "current" {}
 
 locals {
-  enabled = module.this.enabled && !contains(var.disabled_aggregation_regions, data.aws_region.this.name)
+  enabled = module.this.enabled && !contains(var.disabled_aggregation_regions, data.aws_region.this.region)
 
   is_central_account                      = var.central_resource_collector_account == data.aws_caller_identity.this.account_id
-  is_global_recorder_region               = var.global_resource_collector_region == data.aws_region.this.name
+  is_global_recorder_region               = var.global_resource_collector_region == data.aws_region.this.region
   child_resource_collector_accounts       = var.child_resource_collector_accounts != null ? var.child_resource_collector_accounts : []
   enable_notifications                    = module.this.enabled && (var.create_sns_topic || var.findings_notification_arn != null)
   create_sns_topic                        = module.this.enabled && var.create_sns_topic
